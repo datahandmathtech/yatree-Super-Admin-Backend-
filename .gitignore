@@ -1,11 +1,7 @@
 node_modules/
 .env
-# dist/  (Keep this unignored as user requested it)
-npm-debug.log
-.vscode/
-.idea/
+*.log
+uploads/
 .DS_Store
 Thumbs.db
-sa_out.log
-sa_debug.log
-uploads/
+
