@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const Tenant = require('../models/Tenant');
 const Company = require('../models/Company');
 const User = require('../models/User');
+const { getModelsForCrm } = require('../config/dbConnections');
 const Vehicle = require('../models/Vehicle');
 const jwt = require('jsonwebtoken');
 
@@ -28,8 +29,9 @@ const getTenants = asyncHandler(async (req, res) => {
     const enhancedTenants = await Promise.all(tenants.map(async (tenant) => {
         if (tenant.companyId) {
             try {
-                const vCount = await Vehicle.countDocuments({ company: tenant.companyId, isOutsideCar: false });
-                const dCount = await User.countDocuments({ company: tenant.companyId, role: 'Driver' });
+                const { Vehicle: DynamicVehicle, User: DynamicUser } = await getModelsForCrm(tenant.crmType || 'LogKaro Fleet');
+                const vCount = await DynamicVehicle.countDocuments({ company: tenant.companyId, isOutsideCar: false });
+                const dCount = await DynamicUser.countDocuments({ company: tenant.companyId, role: 'Driver' });
                 return { ...tenant, vehicleCount: vCount, driverCount: dCount };
             } catch (err) {
                 return { ...tenant, vehicleCount: 0, driverCount: 0 };
@@ -61,11 +63,12 @@ const createTenant = asyncHandler(async (req, res) => {
     console.log('REQ BODY:', req.body);
     console.log('REQ FILES:', req.files);
 
-    let {
-        companyName, ownerName, phone, whatsappNumber,
+        let {
+        crmType, companyName, ownerName, phone, whatsappNumber,
         adminEmail, adminPassword, plan, monthlyFee,
         trialDays, permissions, vehicleLimit, website
     } = req.body;
+    crmType = crmType || 'LogKaro Fleet';
 
     // Handle permissions if it's a string from FormData
     if (typeof permissions === 'string') {
@@ -346,7 +349,8 @@ const deleteTenant = asyncHandler(async (req, res) => {
     if (tenant) {
         // Suspend the associated company if it exists
         if (tenant.companyId) {
-            await Company.findByIdAndUpdate(tenant.companyId, { status: 'suspended' });
+            const { Company: DynamicCompany } = await getModelsForCrm(tenant.crmType || 'LogKaro Fleet');
+        await DynamicCompany.findByIdAndUpdate(tenant.companyId, { status: 'suspended' });
         }
 
         // Use findByIdAndDelete for maximum reliability
@@ -369,8 +373,11 @@ const loginAsTenant = asyncHandler(async (req, res) => {
         throw new Error('Tenant not found');
     }
 
-    // Find the matching company in the shared DB
-    const company = await Company.findById(tenant.companyId);
+    // Dynamically fetch models
+    const { Company: DynamicCompany, User: DynamicUser } = await getModelsForCrm(tenant.crmType || 'LogKaro Fleet');
+
+    // Find the matching company in the target DB
+    const company = await DynamicCompany.findById(tenant.companyId);
     if (!company) {
         res.status(404);
         throw new Error('Matching CRM Company record not found');
@@ -378,12 +385,9 @@ const loginAsTenant = asyncHandler(async (req, res) => {
 
     console.log(`[BRIDGE-ATTEMPT] Impersonating: ${company.name} (Tenant: ${tenant._id})`);
 
-    // Find the root admin of this company
-    let adminUser = await User.findOne({ company: company._id, role: { $regex: /admin|executive/i } });
-    
-    // If no admin exists for this company, find any user
+    let adminUser = await DynamicUser.findOne({ company: company._id, role: { $regex: /admin|executive/i } });
     if (!adminUser) {
-        adminUser = await User.findOne({ company: company._id });
+        adminUser = await DynamicUser.findOne({ company: company._id });
     }
 
     if (!adminUser) {
@@ -393,8 +397,10 @@ const loginAsTenant = asyncHandler(async (req, res) => {
 
     const bridgeToken = generateBridgeToken(adminUser, company._id);
     
-    // We'll return the CRM URL with the token
-    const crmUrl = process.env.CRM_FRONTEND_URL || 'http://localhost:5173';
+    // Determine the CRM URL based on type
+    let crmUrl = process.env.CRM_FRONTEND_URL || 'http://localhost:5173';
+    if (tenant.crmType === 'School Management') crmUrl = process.env.SCHOOL_FRONTEND_URL || 'http://localhost:5175';
+    if (tenant.crmType === 'Modified Fleet') crmUrl = process.env.MODIFIED_FLEET_FRONTEND_URL || 'http://localhost:5176';
     
     res.json({
         token: bridgeToken,

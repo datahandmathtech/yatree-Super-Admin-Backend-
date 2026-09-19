@@ -12,6 +12,7 @@ const tenantSchema = new mongoose.Schema({
     website: { type: String, default: '' },
     signature: { type: String, default: '' },
     businessType: { type: String, default: 'Taxi Fleet' },
+    crmType: { type: String, enum: ['LogKaro Fleet', 'School Management', 'Modified Fleet'], default: 'LogKaro Fleet' },
 
     // Admin Login Credentials (for main CRM login)
     adminEmail: { type: String, required: true, unique: true, lowercase: true },
