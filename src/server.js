@@ -101,6 +101,7 @@ app.use((req, res, next) => {
 });
 
 app.use((err, req, res, next) => {
+    console.error('SERVER ERROR:', err);
     const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
     res.status(statusCode);
     res.json({

@@ -22,9 +22,13 @@ const getConnection = async (crmType) => {
         return connections[crmType];
     }
 
-    console.log(`Establishing new dynamic connection for ${crmType}...`);
-    const conn = await mongoose.createConnection(uri).asPromise();
-    connections[crmType] = conn;
+    
+        console.log(`Establishing new dynamic connection for ${crmType}...`);
+        const conn = mongoose.createConnection(uri, { serverSelectionTimeoutMS: 5000 });
+        conn.on('error', err => console.error(`Dynamic DB Error for ${crmType}:`, err));
+        conn.on('connected', () => console.log(`Dynamic DB Connected for ${crmType}!`));
+        connections[crmType] = conn;
+
     return conn;
 };
 

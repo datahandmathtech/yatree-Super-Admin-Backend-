@@ -106,7 +106,8 @@ const createTenant = asyncHandler(async (req, res) => {
     }
 
     // 1. Find or Create Company record in main DB
-    let company = await Company.findOne({ name: { $regex: new RegExp(`^${companyName.trim()}$`, 'i') } });
+    const { Company: DynamicCompany, User: DynamicUser } = await getModelsForCrm(crmType);
+      let company = await DynamicCompany.findOne({ name: { $regex: new RegExp(`^${companyName.trim()}$`, 'i') } });
     if (company) {
         company.status = 'active';
         company.vehicleLimit = Number(vehicleLimit) || company.vehicleLimit || 10;
@@ -117,7 +118,7 @@ const createTenant = asyncHandler(async (req, res) => {
         company.whatsappNumber = whatsappNumber || phone || company.whatsappNumber || '916367466426';
         await company.save();
     } else {
-        company = await Company.create({
+        company = await DynamicCompany.create({
             name: companyName,
             status: 'active',
             vehicleLimit: Number(vehicleLimit) || 10,
@@ -130,7 +131,7 @@ const createTenant = asyncHandler(async (req, res) => {
     }
 
     // 2. Find or Create Admin User record in main DB
-    let user = await User.findOne({ username: adminEmail });
+    let user = await DynamicUser.findOne({ username: adminEmail });
     if (user) {
         user.name = ownerName || user.name;
         user.mobile = phone || user.mobile;
@@ -142,7 +143,7 @@ const createTenant = asyncHandler(async (req, res) => {
         if (permissions) user.permissions = permissions;
         await user.save();
     } else {
-        user = await User.create({
+        user = await DynamicUser.create({
             name: ownerName || 'Admin',
             mobile: phone || '0000000000',
             username: adminEmail,
@@ -201,6 +202,7 @@ const createTenant = asyncHandler(async (req, res) => {
         await tenant.save();
     } else {
         tenant = await Tenant.create({
+            crmType: crmType,
             companyName,
             ownerName: ownerName || 'Admin',
             email,
@@ -244,7 +246,6 @@ const updateTenant = asyncHandler(async (req, res) => {
     const tenant = await Tenant.findById(req.params.id);
 
     if (tenant) {
-        // Construct URLs for logo and signature if files uploaded
         let logoUrl = req.body.logo ?? tenant.logo;
         let signatureUrl = req.body.signature ?? tenant.signature;
 
@@ -266,6 +267,7 @@ const updateTenant = asyncHandler(async (req, res) => {
             }
         }
 
+        tenant.crmType = req.body.crmType || tenant.crmType;
         tenant.companyName = req.body.companyName || tenant.companyName;
         tenant.ownerName = req.body.ownerName || tenant.ownerName;
         tenant.phone = req.body.phone || tenant.phone;
@@ -279,17 +281,18 @@ const updateTenant = asyncHandler(async (req, res) => {
         tenant.signature = signatureUrl;
         tenant.expiresAt = req.body.expiresAt || tenant.expiresAt;
 
-        // 🛡️ SYNC: Update the actual Admin User record if email or password changed
+        // SYNC: Update the actual Admin User record in target DB
         if (tenant.adminUserId) {
-            const user = await User.findById(tenant.adminUserId);
+            const { Company: DynamicCompany, User: DynamicUser } = await getModelsForCrm(tenant.crmType || 'LogKaro Fleet');
+            const user = await DynamicUser.findById(tenant.adminUserId);
             if (user) {
                 if (req.body.adminEmail) {
                     user.username = req.body.adminEmail;
                     tenant.adminEmail = req.body.adminEmail;
                 }
                 if (req.body.adminPassword) {
-                    user.password = req.body.adminPassword; // This will be hashed by User model pre-save
-                    tenant.adminPassword = req.body.adminPassword; // Keep plain text in Tenant for SA display
+                    user.password = req.body.adminPassword; 
+                    tenant.adminPassword = req.body.adminPassword; 
                 }
                 if (permissions) {
                     user.permissions = permissions;
@@ -300,31 +303,26 @@ const updateTenant = asyncHandler(async (req, res) => {
                 }
                 if (req.body.vehicleLimit || req.body.website || req.files || req.body.ownerName || req.body.phone) {
                     user.vehicleLimit = Number(req.body.vehicleLimit) || user.vehicleLimit;
-                    // Also update company record
-                    // 🛡️ RECOVERY: If companyId is missing, try to find it by name (Fuzzy/Case-insensitive)
+                    
                     if (!tenant.companyId) {
-                        const foundCompany = await Company.findOne({ 
+                        const foundCompany = await DynamicCompany.findOne({ 
                             name: { $regex: new RegExp(`^${tenant.companyName.split(' ')[0]}`, 'i') } 
                         });
                         if (foundCompany) {
                             tenant.companyId = foundCompany._id;
-                            console.log(`[RECOVERY] Linked tenant "${tenant.companyName}" to companyId: ${foundCompany._id} (Match: ${foundCompany.name})`);
-                        } else {
-                            console.log(`[RECOVERY-FAILED] No company found matching "${tenant.companyName}"`);
                         }
                     }
 
                     if (tenant.companyId) {
-                        const updatedComp = await Company.findByIdAndUpdate(tenant.companyId, { 
+                        const updatedComp = await DynamicCompany.findByIdAndUpdate(tenant.companyId, { 
                             status: req.body.status || tenant.status,
                             vehicleLimit: Number(req.body.vehicleLimit) || tenant.vehicleLimit,
                             website: req.body.website ?? tenant.website,
-                            logoUrl: logoUrl || (tenant.companyId ? (await Company.findById(tenant.companyId))?.logoUrl : ''),
-                            ownerSignatureUrl: signatureUrl || (tenant.companyId ? (await Company.findById(tenant.companyId))?.ownerSignatureUrl : ''),
+                            logoUrl: logoUrl || (tenant.companyId ? (await DynamicCompany.findById(tenant.companyId))?.logoUrl : ''),
+                            ownerSignatureUrl: signatureUrl || (tenant.companyId ? (await DynamicCompany.findById(tenant.companyId))?.ownerSignatureUrl : ''),
                             ownerName: req.body.ownerName ?? tenant.ownerName,
                             whatsappNumber: req.body.whatsappNumber ?? tenant.whatsappNumber ?? tenant.phone
                         }, { new: true });
-                        console.log(`[SYNC] Updated Company "${tenant.companyName}" (ID: ${tenant.companyId}) status to: ${updatedComp?.status}`);
                     }
                 }
                 await user.save();
@@ -341,7 +339,6 @@ const updateTenant = asyncHandler(async (req, res) => {
 
 // @desc    Delete tenant (Warning: Data removal)
 // @route   DELETE /api/tenants/:id
-// @access  Private (Super Admin)
 const deleteTenant = asyncHandler(async (req, res) => {
     const tenantId = req.params.id;
     const tenant = await Tenant.findById(tenantId);
