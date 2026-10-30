@@ -19,6 +19,20 @@ const generateBridgeToken = (user, companyId) => {
     );
 };
 
+const parseJsonField = (field, defaultValue) => {
+    if (field === undefined || field === null) return defaultValue;
+    if (typeof field === 'object') return field;
+    if (typeof field === 'string') {
+        try {
+            return JSON.parse(field);
+        } catch (e) {
+            console.error('Failed to parse JSON field:', e);
+            return defaultValue;
+        }
+    }
+    return defaultValue;
+};
+
 // @desc    Get all tenants
 // @route   GET /api/tenants
 // @access  Private (Super Admin)
@@ -63,21 +77,64 @@ const createTenant = asyncHandler(async (req, res) => {
     console.log('REQ BODY:', req.body);
     console.log('REQ FILES:', req.files);
 
-        let {
+    let {
         crmType, companyName, ownerName, phone, whatsappNumber,
         adminEmail, adminPassword, plan, monthlyFee,
-        trialDays, permissions, vehicleLimit, website
+        trialDays, permissions, vehicleLimit, website,
+        businessModel
     } = req.body;
     crmType = crmType || 'LogKaro Fleet';
+    businessModel = businessModel || 'Both';
 
-    // Handle permissions if it's a string from FormData
-    if (typeof permissions === 'string') {
-        try {
-            permissions = JSON.parse(permissions);
-        } catch (e) {
-            console.error('Failed to parse permissions:', e);
-        }
-    }
+    // Handle permissions & granular feature configs
+    permissions = parseJsonField(permissions, {
+        dashboard: true,
+        liveFeed: true,
+        logBook: true,
+        driversService: true,
+        fleetOperations: true,
+        buySell: true,
+        vehiclesManagement: true,
+        staffManagement: true,
+        manageAdmins: true,
+        reports: true
+    });
+
+    const appAccess = parseJsonField(req.body.appAccess, {
+        adminPortal: true,
+        driverPortal: true,
+        clientPortal: false
+    });
+
+    const driverAppSettings = parseJsonField(req.body.driverAppSettings, {
+        photoUploadCount: 3,
+        requireMeterReading: true,
+        allowSelfPunch: true,
+        dutyForm: { showMeterReading: true, showOutsideCityQuestion: true, showDutyDetails: true },
+        tabs: { showUpcomingRides: true, showSalaryLedger: true },
+        parking: { driverCanEnterAmount: true },
+        fuel: { showLiters: true, showFuelType: true, showAmount: true, showKm: true }
+    });
+
+    const operationalSettings = parseJsonField(req.body.operationalSettings, {
+        parking: { enabled: true, trackPayment: true, driverCanEnterAmount: true },
+        fuel: { enabled: true, requireKmReading: true, showLiters: true, showFuelType: true, showAmount: true, showKm: true },
+        outsideCars: { enabled: true },
+        borderTax: { enabled: true },
+        fastag: { enabled: true },
+        maintenance: { enabled: true },
+        leads: { enabled: true },
+        drs: { enabled: true },
+        invoices: { enabled: true }
+    });
+
+    const salarySettings = parseJsonField(req.body.salarySettings, {
+        salaryType: 'monthly',
+        monthlyLeaveAllowance: 2,
+        carryForwardLeaves: false,
+        dayAllowance: { enabled: true, defaultAmount: 200 },
+        nightAllowance: { enabled: true, defaultAmount: 250 }
+    });
 
     // Ensure numbers are numbers
     monthlyFee = Number(monthlyFee) || 0;
@@ -107,7 +164,7 @@ const createTenant = asyncHandler(async (req, res) => {
 
     // 1. Find or Create Company record in main DB
     const { Company: DynamicCompany, User: DynamicUser } = await getModelsForCrm(crmType);
-      let company = await DynamicCompany.findOne({ name: { $regex: new RegExp(`^${companyName.trim()}$`, 'i') } });
+    let company = await DynamicCompany.findOne({ name: { $regex: new RegExp(`^${companyName.trim()}$`, 'i') } });
     if (company) {
         company.status = 'active';
         company.vehicleLimit = Number(vehicleLimit) || company.vehicleLimit || 10;
@@ -116,6 +173,11 @@ const createTenant = asyncHandler(async (req, res) => {
         company.ownerSignatureUrl = signatureUrl || company.ownerSignatureUrl || '';
         company.ownerName = ownerName || company.ownerName || '';
         company.whatsappNumber = whatsappNumber || phone || company.whatsappNumber || '916367466426';
+        company.businessModel = businessModel;
+        company.appAccess = appAccess;
+        company.driverAppSettings = driverAppSettings;
+        company.operationalSettings = operationalSettings;
+        company.salarySettings = salarySettings;
         await company.save();
     } else {
         company = await DynamicCompany.create({
@@ -126,7 +188,12 @@ const createTenant = asyncHandler(async (req, res) => {
             logoUrl: logoUrl,
             ownerSignatureUrl: signatureUrl,
             ownerName: ownerName || '',
-            whatsappNumber: whatsappNumber || phone || '916367466426'
+            whatsappNumber: whatsappNumber || phone || '916367466426',
+            businessModel,
+            appAccess,
+            driverAppSettings,
+            operationalSettings,
+            salarySettings
         });
     }
 
@@ -198,7 +265,12 @@ const createTenant = asyncHandler(async (req, res) => {
         tenant.website = website || tenant.website || '';
         tenant.logo = logoUrl || tenant.logo || '';
         tenant.signature = signatureUrl || tenant.signature || '';
-        if (permissions) tenant.permissions = permissions;
+        tenant.permissions = permissions;
+        tenant.businessModel = businessModel;
+        tenant.appAccess = appAccess;
+        tenant.driverAppSettings = driverAppSettings;
+        tenant.operationalSettings = operationalSettings;
+        tenant.salarySettings = salarySettings;
         await tenant.save();
     } else {
         tenant = await Tenant.create({
@@ -221,18 +293,12 @@ const createTenant = asyncHandler(async (req, res) => {
             signature: signatureUrl,
             companyId: company._id,
             adminUserId: user._id,
-            permissions: permissions || {
-                dashboard: true,
-                liveFeed: true,
-                logBook: true,
-                driversService: true,
-                buySell: true,
-                vehiclesManagement: true,
-                fleetOperations: true,
-                reports: true,
-                staffManagement: true,
-                manageAdmins: true
-            }
+            permissions,
+            businessModel,
+            appAccess,
+            driverAppSettings,
+            operationalSettings,
+            salarySettings
         });
     }
 
@@ -258,14 +324,12 @@ const updateTenant = asyncHandler(async (req, res) => {
             }
         }
 
-        let permissions = req.body.permissions;
-        if (typeof permissions === 'string') {
-            try {
-                permissions = JSON.parse(permissions);
-            } catch (e) {
-                console.error('Failed to parse update permissions:', e);
-            }
-        }
+        let permissions = req.body.permissions ? parseJsonField(req.body.permissions, tenant.permissions) : tenant.permissions;
+        let businessModel = req.body.businessModel || tenant.businessModel || 'Both';
+        let appAccess = req.body.appAccess ? parseJsonField(req.body.appAccess, tenant.appAccess) : tenant.appAccess;
+        let driverAppSettings = req.body.driverAppSettings ? parseJsonField(req.body.driverAppSettings, tenant.driverAppSettings) : tenant.driverAppSettings;
+        let operationalSettings = req.body.operationalSettings ? parseJsonField(req.body.operationalSettings, tenant.operationalSettings) : tenant.operationalSettings;
+        let salarySettings = req.body.salarySettings ? parseJsonField(req.body.salarySettings, tenant.salarySettings) : tenant.salarySettings;
 
         tenant.crmType = req.body.crmType || tenant.crmType;
         tenant.companyName = req.body.companyName || tenant.companyName;
@@ -280,10 +344,17 @@ const updateTenant = asyncHandler(async (req, res) => {
         tenant.logo = logoUrl;
         tenant.signature = signatureUrl;
         tenant.expiresAt = req.body.expiresAt || tenant.expiresAt;
+        tenant.permissions = permissions;
+        tenant.businessModel = businessModel;
+        tenant.appAccess = appAccess;
+        tenant.driverAppSettings = driverAppSettings;
+        tenant.operationalSettings = operationalSettings;
+        tenant.salarySettings = salarySettings;
 
-        // SYNC: Update the actual Admin User record in target DB
+        // SYNC: Update the actual Admin User and Company record in target DB
+        const { Company: DynamicCompany, User: DynamicUser } = await getModelsForCrm(tenant.crmType || 'LogKaro Fleet');
+
         if (tenant.adminUserId) {
-            const { Company: DynamicCompany, User: DynamicUser } = await getModelsForCrm(tenant.crmType || 'LogKaro Fleet');
             const user = await DynamicUser.findById(tenant.adminUserId);
             if (user) {
                 if (req.body.adminEmail) {
@@ -296,37 +367,39 @@ const updateTenant = asyncHandler(async (req, res) => {
                 }
                 if (permissions) {
                     user.permissions = permissions;
-                    tenant.permissions = permissions;
                 }
                 if (req.body.phone) {
                     user.mobile = req.body.phone;
                 }
-                if (req.body.vehicleLimit || req.body.website || req.files || req.body.ownerName || req.body.phone) {
-                    user.vehicleLimit = Number(req.body.vehicleLimit) || user.vehicleLimit;
-                    
-                    if (!tenant.companyId) {
-                        const foundCompany = await DynamicCompany.findOne({ 
-                            name: { $regex: new RegExp(`^${tenant.companyName.split(' ')[0]}`, 'i') } 
-                        });
-                        if (foundCompany) {
-                            tenant.companyId = foundCompany._id;
-                        }
-                    }
-
-                    if (tenant.companyId) {
-                        const updatedComp = await DynamicCompany.findByIdAndUpdate(tenant.companyId, { 
-                            status: req.body.status || tenant.status,
-                            vehicleLimit: Number(req.body.vehicleLimit) || tenant.vehicleLimit,
-                            website: req.body.website ?? tenant.website,
-                            logoUrl: logoUrl || (tenant.companyId ? (await DynamicCompany.findById(tenant.companyId))?.logoUrl : ''),
-                            ownerSignatureUrl: signatureUrl || (tenant.companyId ? (await DynamicCompany.findById(tenant.companyId))?.ownerSignatureUrl : ''),
-                            ownerName: req.body.ownerName ?? tenant.ownerName,
-                            whatsappNumber: req.body.whatsappNumber ?? tenant.whatsappNumber ?? tenant.phone
-                        }, { new: true });
-                    }
-                }
+                user.vehicleLimit = Number(req.body.vehicleLimit) || user.vehicleLimit;
                 await user.save();
             }
+        }
+
+        if (!tenant.companyId) {
+            const foundCompany = await DynamicCompany.findOne({ 
+                name: { $regex: new RegExp(`^${tenant.companyName.split(' ')[0]}`, 'i') } 
+            });
+            if (foundCompany) {
+                tenant.companyId = foundCompany._id;
+            }
+        }
+
+        if (tenant.companyId) {
+            await DynamicCompany.findByIdAndUpdate(tenant.companyId, { 
+                status: req.body.status || tenant.status,
+                vehicleLimit: Number(req.body.vehicleLimit) || tenant.vehicleLimit,
+                website: req.body.website ?? tenant.website,
+                logoUrl: logoUrl || (tenant.companyId ? (await DynamicCompany.findById(tenant.companyId))?.logoUrl : ''),
+                ownerSignatureUrl: signatureUrl || (tenant.companyId ? (await DynamicCompany.findById(tenant.companyId))?.ownerSignatureUrl : ''),
+                ownerName: req.body.ownerName ?? tenant.ownerName,
+                whatsappNumber: req.body.whatsappNumber ?? tenant.whatsappNumber ?? tenant.phone,
+                businessModel,
+                appAccess,
+                driverAppSettings,
+                operationalSettings,
+                salarySettings
+            }, { new: true });
         }
 
         const updatedTenant = await tenant.save();
@@ -347,7 +420,7 @@ const deleteTenant = asyncHandler(async (req, res) => {
         // Suspend the associated company if it exists
         if (tenant.companyId) {
             const { Company: DynamicCompany } = await getModelsForCrm(tenant.crmType || 'LogKaro Fleet');
-        await DynamicCompany.findByIdAndUpdate(tenant.companyId, { status: 'suspended' });
+            await DynamicCompany.findByIdAndUpdate(tenant.companyId, { status: 'suspended' });
         }
 
         // Use findByIdAndDelete for maximum reliability
